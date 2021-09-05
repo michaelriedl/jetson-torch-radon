@@ -1,0 +1,112 @@
+# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-base:r32.4.4
+FROM ${BASE_IMAGE}
+
+#
+# setup environment
+#
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CUDA_HOME="/usr/local/cuda"
+ENV PATH="/usr/local/cuda/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
+ENV LLVM_CONFIG="/usr/bin/llvm-config-9"
+ARG MAKEFLAGS=-j$(nproc)
+
+RUN printenv
+
+#
+# install prerequisites (many of these are for numpy)
+#
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+            python3-pip \
+		    python3-dev \
+            python3-matplotlib \
+            build-essential \
+		    libopenblas-dev \
+		    libopenmpi2 \
+            openmpi-bin \
+            openmpi-common \
+		    gfortran \
+            vim \
+            git \
+            cmake \
+            curl \
+            python3-healpy \
+            fftw3-dev \
+            python3-tk \
+            ninja-build \
+            libffi-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+RUN pip3 install --no-cache-dir setuptools Cython wheel
+RUN pip3 install --no-cache-dir --verbose numpy --upgrade
+RUN pip3 install --no-cache-dir --verbose scipy
+
+#
+# PyTorch (for JetPack 4.4 DP)
+#
+#  PyTorch v1.2.0 https://nvidia.box.com/shared/static/lufbgr3xu2uha40cs9ryq1zn4kxsnogl.whl (torch-1.2.0-cp36-cp36m-linux_aarch64.whl)
+#  PyTorch v1.3.0 https://nvidia.box.com/shared/static/017sci9z4a0xhtwrb4ps52frdfti9iw0.whl (torch-1.3.0-cp36-cp36m-linux_aarch64.whl)
+#  PyTorch v1.4.0 https://nvidia.box.com/shared/static/c3d7vm4gcs9m728j6o5vjay2jdedqb55.whl (torch-1.4.0-cp36-cp36m-linux_aarch64.whl)
+#  PyTorch v1.5.0 https://nvidia.box.com/shared/static/3ibazbiwtkl181n95n9em3wtrca7tdzp.whl (torch-1.5.0-cp36-cp36m-linux_aarch64.whl)
+#
+ARG PYTORCH_URL=https://nvidia.box.com/shared/static/lufbgr3xu2uha40cs9ryq1zn4kxsnogl.whl
+ARG PYTORCH_WHL=torch-1.2.0-cp36-cp36m-linux_aarch64.whl
+
+RUN wget --quiet --show-progress --progress=bar:force:noscroll --no-check-certificate ${PYTORCH_URL} -O ${PYTORCH_WHL} && \
+    pip3 install --no-cache-dir --verbose ${PYTORCH_WHL} && \
+    rm ${PYTORCH_WHL}
+    
+#
+# install torch-radon
+#
+RUN git clone https://github.com/michaelriedl/alpha-transform.git alpha-transform && \
+    cd alpha-transform && \
+    python3 setup.py install --verbose && \
+    cd ../ && \
+    rm -rf alpha-transform
+RUN git clone https://github.com/michaelriedl/torch-radon.git torch-radon && \
+    cd torch-radon && \
+    python3 setup.py install --verbose && \
+    cd ../ && \
+    rm -rf torch-radon
+    
+#
+# JupyterLab
+#
+RUN curl -sL https://deb.nodesource.com/setup_10.x | bash - && \
+    apt-get update && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && \
+    pip3 install --no-cache-dir --verbose jupyter jupyterlab==2.2.9 && \
+    jupyter labextension install @jupyter-widgets/jupyterlab-manager
+    
+RUN jupyter lab --generate-config
+RUN python3 -c "from notebook.auth.security import set_password; set_password('nvidia', '/root/.jupyter/jupyter_notebook_config.json')"
+
+CMD /bin/bash -c "jupyter lab --ip 0.0.0.0 --port 8888 --allow-root &> /var/log/jupyter.log" & \
+    echo "allow 10 sec for JupyterLab to start @ http://$(hostname -I | cut -d' ' -f1):8888 (password nvidia)" && \
+    echo "JupterLab logging location:  /var/log/jupyter.log  (inside the container)" && \
+    /bin/bash
